@@ -1,0 +1,333 @@
+---
+title: "Untitled"
+output: pdf_document
+date: '2022-04-04'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(data.table)
+#install.packages('sandwich')
+library(sandwich)
+#install.packages('lmtest')
+library(lmtest)
+#install.packages('AER')
+library(AER) 
+library(ggplot2) 
+#install.packages('patchwork')
+library(patchwork)
+#install.packages('stargazer')
+library(stargazer)
+
+#install.packages("tinytex")
+tinytex::install_tinytex()
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+d <- fread('cleaned_survey_data.csv')
+# we had 2 N/A in delta_mood due to no responses given for one or more mood questions - remove these
+d <- d[ delta_mood != 'NA'] 
+
+
+head(d)
+```
+
+
+```{r}
+d[ , Estimated_Song_Duration := Duration - (13*5)]
+sum(d$Estimated_Song_Duration > 90)
+d$Estimated_Song_Duration
+
+
+d[ , Likely_Full := ifelse(Estimated_Song_Duration >= 90,1,0)]
+d[ , Partial_1 := ifelse(Estimated_Song_Duration >= 45 & Estimated_Song_Duration < 90,1,0)]
+d[ , Partial_2 := ifelse(Estimated_Song_Duration >= 15 & Estimated_Song_Duration < 45,1,0)]
+
+sum(d$Likely_Full)
+sum(d$Partial_1)
+sum(d$Partial_2)
+
+e <- d[ Likely_Full == 1]
+
+sum(e$HVTotal)
+sum(e$LVTotal)
+
+
+#d[ , Estimated_Song_Duration := Duration - (13*10)]
+#sum(d$Estimated_Song_Duration > 90)
+
+```
+
+
+
+First, let's look at a model with with only the binary treatment indicator and its effect on the change in mood.
+
+```{r}
+model_simple <- lm(e$delta_mood ~ e$HVTotal)
+
+coeftest_simple <- coeftest(model_simple, vcov = vcovHC(model_simple))
+
+coeftest_simple
+
+model_simple_coeff <- coeftest_simple[2,1]
+model_simple_se <- coeftest_simple[2,2]
+
+```
+
+It looks like we'd expect someone in the treatment group to have almost exactly a 0 point change in mood - while someone in control experienced a negative change in mood.  The standard errors are pretty large - we have a point estimate of `r model_simple_coeff` for the treatment effect and `r model_simple_se` for the standard errors.
+
+```{r}
+# the 0 point change is really weird - just want to do a sanity check
+mean_deltas <- e[, .(mean_delta = sum(delta_mood)/length(delta_mood)), keyby = HVTotal]
+
+
+```
+
+
+The first "more complex" model I want to look at takes into account "recency bias", that is, whether the last song heard has an outsize effect on mood.  If this were the case, we would expect to see significant positive and negative effects for hearing your favorite/least favorite song last.
+
+```{r}
+e[ , Fave_Song_Last := ifelse(Fave_Song_Played == 'Song 3', 1, 0)]
+e[ , Least_Fave_Song_Last := ifelse(Least_Fave_Song == 'Song 3', 1, 0)]
+```
+
+
+```{r}
+model_last_song_best <- lm(e$delta_mood ~ e$HVTotal + e$Fave_Song_Last)
+
+coeftest_last_song_best <- coeftest(model_last_song_best, vcov = vcovHC(model_last_song_best))
+
+coeftest_last_song_best
+
+model_last_song_best_coeff <- coeftest_last_song_best[2,1]
+model_last_song_best_se <- coeftest_last_song_best[2,2]
+
+```
+
+```{r}
+model_last_song_worst <- lm(e$delta_mood ~ e$HVTotal + e$Least_Fave_Song_Last)
+
+coeftest_last_song_worst <- coeftest(model_last_song_worst, vcov = vcovHC(model_last_song_worst))
+
+coeftest_last_song_worst
+
+model_last_song_best_coeff <- coeftest_last_song_worst[2,1]
+model_last_song_best_se <- coeftest_last_song_worst[2,2]
+
+```
+
+All of the effects are insignificant, this may imply that mood is more affected by listening to music in general rather than just the most recent song you have listened to.  Given the treatment variable is also insignificant in all cases, this is just a thought rather than a takeaway from our analysis.
+
+
+My next thought is that prehaps some people are more prone to experiencing mood changes when listening to music based off of how much music they listen to.  
+
+I would hypothesize that people who tend to listen to music more often are those who experience more emotional benefit from doing so.  I would define emotional benefit as experiencing some sort of emotion rather than just happiness (we probably need to discuss somewhere the distinction that sad music can make you happier, or that experiencing negative emotion like anger can actually increase mood, as it may be that feeling any sort of emotion is better than feeling nothing).  In any case, if this hypothesis were to be true, we should see that those who listen to a lot of music every week tend to have stronger emotional responses to treatment  
+
+
+
+```{r}
+model_weekly_music<- lm(e$delta_mood ~ e$HVTotal + e$Hrs_music_week)
+coeftest_weekly_music <- coeftest(model_weekly_music, vcov = vcovHC(model_weekly_music))
+
+coeftest_weekly_music
+
+model_weekly_music_coeff <- coeftest_weekly_music[2,1]
+model_weekly_music_se <- coeftest_weekly_music[2,2]
+```
+
+```{r}
+model_weekly_music_only <- lm(e$delta_mood ~ e$Hrs_music_week)
+coeftest_weekly_music_only <- coeftest(model_weekly_music_only, vcov = vcovHC(model_weekly_music_only))
+
+coeftest_weekly_music_only
+
+model_weekly_music_only_coeff <- coeftest_weekly_music_only[2,1]
+model_weekly_music_only_se <- coeftest_weekly_music_only[2,2]
+```
+
+
+
+This does not appear to be the case - all coefficients are insignificant.
+
+Second, while I had expected a high weekly listening total to predict stronger emotional responses, I would expect that a high daily listening total (i.e. how much music has a person listened to that day already) to predict a weaker emotional response.  It could be that music provides some mood change up to a certain point, but then after that it sort of becomes background noise and has less of an effect.  If this were true, we would see that a high daily listening value would significantly predict a smaller emotional response.
+
+```{r}
+model_today_music <- lm(e$delta_mood ~ e$HVTotal + e$Hrs_music_today)
+coeftest_today_music <- coeftest(model_today_music, vcov = vcovHC(model_today_music))
+
+coeftest_today_music
+
+model_today_music_coeff <- coeftest_today_music[2,1]
+model_today_music_se <- coeftest_today_music[2,2]
+```
+We do indeed get a negative estimate, but the standard errors are too high to make any sort of informed observation here.
+
+As a part of the survey, we measured respondents' favorite genres.  We considered how we could use this data, and ultimately decided it could be interesting to look at whether someone heard their favorite genre.  Obviously someone will not like every song that fits in their preferred genre, so this metric is messy at best, but we thought it was worth considering nevertheless.
+
+```{r}
+model_fav_genre <- lm(e$delta_mood ~ e$HVTotal + e$`did_hear_fave_genre?`)
+coeftest_fav_genre <- coeftest(model_fav_genre, vcov = vcovHC(model_fav_genre))
+
+coeftest_fav_genre
+
+model_fav_genre_coeff <- coeftest_fav_genre[2,1]
+model_fav_genre_se <- coeftest_fav_genre[2,2]
+```
+
+It doesn't seem like there is a significant effect here either!
+
+Out of curiosity, I wonder what happens if i test several variables together - all of which I would think predict an increase in mood - what happens?
+
+```{r}
+model_kitchen_sink <- lm(e$delta_mood ~ e$HVTotal + e$`did_hear_fave_genre?` + e$Fave_Song_Last +e$`Normally_Listen_to?`)
+coeftest_kitchen_sink <- coeftest(model_kitchen_sink, vcov = vcovHC(model_kitchen_sink))
+
+coeftest_kitchen_sink
+
+model_kitchen_sink_coeff <- coeftest_kitchen_sink[2,1]
+model_kitchen_sink_se <- coeftest_kitchen_sink[2,2]
+```
+
+The covariates all have positive point estimates, just large standard errors.  Maybe this is a power issue?
+
+Let's run it without the treatment variable
+
+```{r}
+model_kitchen_sink_no_treat <- lm(e$delta_mood ~ e$`did_hear_fave_genre?` + e$Fave_Song_Last +e$`Normally_Listen_to?`)
+coeftest_kitchen_sink_no_treat <- coeftest(model_kitchen_sink_no_treat, vcov = vcovHC(model_kitchen_sink_no_treat))
+
+coeftest_kitchen_sink_no_treat
+
+model_kitchen_sink_no_treat_coeff <- coeftest_kitchen_sink_no_treat[2,1]
+model_kitchen_sink_no_treat_se <- coeftest_kitchen_sink_no_treat[2,2]
+```
+Pretty similar effect
+
+Something else we asked about was how people listened to the music - I hypothesized that someone listening using headphones may experience a larger effect than people who listened just using their computer (or even bluetooth speakers).  Let's see
+
+```{r}
+e[ , speakers := ifelse(Mode_of_Listening == 'Speakers', 1, 0)]
+e[ , headphones := ifelse(Mode_of_Listening == 'Headphones', 1, 0)]
+e[ , computer := ifelse(Mode_of_Listening == 'Computer', 1, 0)]
+e[ , mobile := ifelse(Mode_of_Listening == 'Mobile device', 1, 0)]
+```
+
+```{r}
+model_listening <- lm(e$delta_mood ~ e$HVTotal +e$speakers + e$headphones + e$computer +e$mobile)
+coeftest_listening <- coeftest(model_listening, vcov = vcovHC(model_listening))
+
+coeftest_listening
+
+model_listening_coeff <- coeftest_listening[2,1]
+model_listening_se <- coeftest_listening[2,2]
+
+
+```
+
+Another interesting result - again we have no significant results, but at least as a point estimate, listening using your phone had the highest effect - by far.  If people interpreted this question correctly (mobile would mean listening to it using your phone, while not using speakers, headphones, etc.) this would mean that one of, if not the quietest type of listening we tested caused some of the highest results.
+
+We also gathered data on some other audio features - in particular, we are interested in seeing if controlling for danceability and energy affects our results.  I am also curious whether these two are better predictors of mood than valence...
+
+```{r}
+model_audio_features <- lm(e$delta_mood ~ e$HVTotal +e$danceability_mean + e$energy_mean)
+coeftest_audio_features <- coeftest(model_audio_features, vcov = vcovHC(model_audio_features))
+
+coeftest_audio_features
+
+model_audio_features <- coeftest_audio_features[2,1]
+model_audio_features<- coeftest_audio_features[2,2]
+
+
+
+```
+
+```{r}
+model_danceability <- lm(e$delta_mood ~ e$danceability_mean)
+coeftest_danceability <- coeftest(model_danceability, vcov = vcovHC(model_danceability))
+
+coeftest_danceability
+
+model_danceability <- coeftest_danceability[2,1]
+model_danceability<- coeftest_danceability[2,2]
+
+
+
+```
+
+```{r}
+model_energy <- lm(e$delta_mood ~ e$energy_mean)
+coeftest_energy  <- coeftest(model_energy , vcov = vcovHC(model_energy ))
+
+coeftest_energy 
+
+model_energy  <- coeftest_energy [2,1]
+model_energy <- coeftest_energy [2,2]
+
+
+
+```
+
+Both, in isolation, are positively correlated with mood, which is intuitive.  But again, we have no significant effects.
+
+Let's do one more big test of everything:
+
+```{r}
+model_big <- lm(e$delta_mood ~ e$HVTotal + e$`did_hear_fave_genre?` + e$Fave_Song_Last +e$`Normally_Listen_to?` +e$energy_mean + e$danceability_mean + e$Hrs_music_today + e$Hrs_music_week)
+coeftest_big <- coeftest(model_big, vcov = vcovHC(model_big))
+
+coeftest_big
+
+model_big_coeff <- coeftest_big[2,1]
+model_big_se <- coeftest_big[2,2]
+
+```
+
+Nothing significant
+
+make some pretty tables:
+
+```{r}
+model_simple_HC <- vcovHC(model_simple)
+model_kitchen_sink_HC <- vcovHC(model_kitchen_sink)
+model_big_HC <- vcovHC(model_big)
+
+stargazer(
+  model_simple,
+  model_kitchen_sink,
+  model_big,
+  type = 'text'
+)
+
+
+```
+
+
+```{r}
+d_subset <- d[d$Duration > 542.8 & d$Duration < 3600]
+d_subset
+
+
+```
+
+
+
+
+```{r}
+stargazer(
+  model_simple,
+  model_energy,
+  model_audio_features,
+  type = 'text'
+)
+
+
+```
